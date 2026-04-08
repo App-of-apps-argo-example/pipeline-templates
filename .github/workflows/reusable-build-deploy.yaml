@@ -13,13 +13,15 @@ jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
       id-token: write
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-        
+        with:
+          fetch-depth: 0
+
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -29,26 +31,70 @@ jobs:
       - name: Login to Amazon ECR
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
-          
-      - name: Build, tag, and push image to Amazon ECR
-        env:
-          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          ECR_REPOSITORY: ${{ inputs.app_name }}
-          IMAGE_TAG: ${{ github.sha }}
+        
+      - name: Setup QEMU
+        uses: docker/setup-qemu-action@v3
+        
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        
+      - name: Generate next version tag
+        id: semver
         run: |
-          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          # Fetch the latest tag from git
+          LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+          echo "Latest tag: $LATEST_TAG"
+          # Extract major, minor, patch
+          if [[ $LATEST_TAG =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+            MAJOR="${BASH_REMATCH[1]}"
+            MINOR="${BASH_REMATCH[2]}"
+            PATCH="${BASH_REMATCH[3]}"
+            NEW_PATCH=$((PATCH + 1))
+            NEW_TAG="v${MAJOR}.${MINOR}.${NEW_PATCH}"
+          else
+            NEW_TAG="v0.0.1"
+          fi
+          echo "New tag: $NEW_TAG"
+          echo "tag=$NEW_TAG" >> $GITHUB_OUTPUT
+          
+      - name: Build and Push Multi-Arch Image
+        id: docker_build
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ steps.login-ecr.outputs.registry }}/${{ inputs.app_name }}:${{ steps.semver.outputs.tag }}
+            ${{ steps.login-ecr.outputs.registry }}/${{ inputs.app_name }}:latest
+            ${{ steps.login-ecr.outputs.registry }}/${{ inputs.app_name }}:${{ github.sha }}
+            
+      - name: Install yq
+        run: |
+          sudo wget -q https://github.com/mikefarah/yq/releases/download/v4.40.5/yq_linux_amd64 -O /usr/local/bin/yq
+          sudo chmod +x /usr/local/bin/yq
 
       - name: Update GitOps Repository
         run: |
           git clone https://x-access-token:${{ secrets.GITOPS_BOT_TOKEN }}@github.com/App-of-apps-argo-example/gitops-core.git
           cd gitops-core
           
-          sed -i "s|repository: .*|repository: ${{ steps.login-ecr.outputs.registry }}/${{ inputs.app_name }}|" environments/stage/${{ inputs.app_name }}-values.yaml
-          sed -i "s|tag: .*|tag: ${{ github.sha }}|" environments/stage/${{ inputs.app_name }}-values.yaml
+          IMAGE_REPO="${{ steps.login-ecr.outputs.registry }}/${{ inputs.app_name }}"
+          NEW_TAG="${{ steps.semver.outputs.tag }}"
+          
+          # Using yq to properly update yaml
+          yq -i ".image.repository = \"$IMAGE_REPO\"" environments/stage/${{ inputs.app_name }}-values.yaml
+          yq -i ".image.tag = \"$NEW_TAG\"" environments/stage/${{ inputs.app_name }}-values.yaml
           
           git config user.name "ci-bot"
           git config user.email "ci-bot@app-of-apps.com"
           git add .
-          git commit -m "chore: deploy ${{ inputs.app_name }} version ${{ github.sha }}" || echo "No changes to commit"
+          git commit -m "chore: deploy ${{ inputs.app_name }} version $NEW_TAG" || echo "No changes to commit"
           git push
+          
+      - name: Create Git Tag in App Repo
+        run: |
+          git config user.name "ci-bot"
+          git config user.email "ci-bot@app-of-apps.com"
+          git tag ${{ steps.semver.outputs.tag }}
+          git push origin ${{ steps.semver.outputs.tag }}
