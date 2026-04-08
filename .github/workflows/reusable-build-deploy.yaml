@@ -50,5 +50,5 @@ jobs:
           git config user.name "ci-bot"
           git config user.email "ci-bot@app-of-apps.com"
           git add .
-          git commit -m "chore: deploy ${{ inputs.app_name }} version ${{ github.sha }}"
+          git commit -m "chore: deploy ${{ inputs.app_name }} version ${{ github.sha }}" || echo "No changes to commit"
           git push
