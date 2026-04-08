@@ -5,6 +5,9 @@ on:
       app_name:
         required: true
         type: string
+      environment:
+        required: true
+        type: string
     secrets:
       GITOPS_BOT_TOKEN:
         required: true
@@ -52,6 +55,12 @@ jobs:
           else
             NEW_TAG="v0.0.1"
           fi
+          
+          # If we are not on main (prod), append environment info to the tag to prevent conflicts
+          if [ "${{ inputs.environment }}" != "prod" ]; then
+            NEW_TAG="${NEW_TAG}-${{ inputs.environment }}"
+          fi
+          
           echo "New tag: $NEW_TAG"
           echo "tag=$NEW_TAG" >> $GITHUB_OUTPUT
           
@@ -78,14 +87,15 @@ jobs:
           
           IMAGE_REPO="${{ steps.login-ecr.outputs.registry }}/${{ inputs.app_name }}"
           NEW_TAG="${{ steps.semver.outputs.tag }}"
+          ENV_FILE="applications/main/values-${{ inputs.environment }}.yaml"
           
-          yq -i ".image.repository = \"$IMAGE_REPO\"" environments/stage/${{ inputs.app_name }}-values.yaml
-          yq -i ".image.tag = \"$NEW_TAG\"" environments/stage/${{ inputs.app_name }}-values.yaml
+          yq -i ".apps.\"${{ inputs.app_name }}\".image.repository = \"$IMAGE_REPO\"" $ENV_FILE
+          yq -i ".apps.\"${{ inputs.app_name }}\".image.tag = \"$NEW_TAG\"" $ENV_FILE
           
           git config user.name "ci-bot"
           git config user.email "ci-bot@app-of-apps.com"
           git add .
-          git commit -m "chore: deploy ${{ inputs.app_name }} version $NEW_TAG" || echo "No changes to commit"
+          git commit -m "chore(${{ inputs.environment }}): deploy ${{ inputs.app_name }} version $NEW_TAG" || echo "No changes to commit"
           git push
           
       - name: Create Git Tag in App Repo
