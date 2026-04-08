@@ -41,10 +41,8 @@ jobs:
       - name: Generate next version tag
         id: semver
         run: |
-          # Fetch the latest tag from git
           LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
           echo "Latest tag: $LATEST_TAG"
-          # Extract major, minor, patch
           if [[ $LATEST_TAG =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
             MAJOR="${BASH_REMATCH[1]}"
             MINOR="${BASH_REMATCH[2]}"
@@ -58,7 +56,6 @@ jobs:
           echo "tag=$NEW_TAG" >> $GITHUB_OUTPUT
           
       - name: Build and Push Multi-Arch Image
-        id: docker_build
         uses: docker/build-push-action@v5
         with:
           context: .
@@ -82,7 +79,6 @@ jobs:
           IMAGE_REPO="${{ steps.login-ecr.outputs.registry }}/${{ inputs.app_name }}"
           NEW_TAG="${{ steps.semver.outputs.tag }}"
           
-          # Using yq to properly update yaml
           yq -i ".image.repository = \"$IMAGE_REPO\"" environments/stage/${{ inputs.app_name }}-values.yaml
           yq -i ".image.tag = \"$NEW_TAG\"" environments/stage/${{ inputs.app_name }}-values.yaml
           
