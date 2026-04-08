@@ -6,10 +6,6 @@ on:
         required: true
         type: string
     secrets:
-      WIF_PROVIDER:
-        required: false
-      WIF_SERVICE_ACCOUNT:
-        required: false
       GITOPS_BOT_TOKEN:
         required: true
 
@@ -18,39 +14,38 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      id-token: write # Required for Workload Identity Federation (OIDC)
+      id-token: write
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
         
-      - name: GCP Auth via WIF (No static credentials)
-        uses: google-github-actions/auth@v2
-        if: env.WIF_PROVIDER != ''
-        with:
-          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
-          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
-          
-      - name: AWS Auth via OIDC (No static credentials)
+      - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
-        if: env.AWS_ROLE_ARN != ''
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          role-to-assume: arn:aws:iam::092568126647:role/GitHubActionsDeployRole
           aws-region: eu-central-1
-      
-      - name: Build and Push Docker Image
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+          
+      - name: Build, tag, and push image to Amazon ECR
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: ${{ inputs.app_name }}
+          IMAGE_TAG: ${{ github.sha }}
         run: |
-          echo "Simulating Docker Build..."
-          echo "Simulating Docker Push for ${{ inputs.app_name }} with tag ${{ github.sha }}"
-      
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+
       - name: Update GitOps Repository
         run: |
-          # Use PAT or GitHub App Token to clone gitops-core
           git clone https://x-access-token:${{ secrets.GITOPS_BOT_TOKEN }}@github.com/App-of-apps-argo-example/gitops-core.git
           cd gitops-core
           
-          # Update the tag in the values file
-          sed -i "s/tag: .*/tag: ${{ github.sha }}/" environments/stage/${{ inputs.app_name }}-values.yaml
+          sed -i "s|repository: .*|repository: ${{ steps.login-ecr.outputs.registry }}/${{ inputs.app_name }}|" environments/stage/${{ inputs.app_name }}-values.yaml
+          sed -i "s|tag: .*|tag: ${{ github.sha }}|" environments/stage/${{ inputs.app_name }}-values.yaml
           
           git config user.name "ci-bot"
           git config user.email "ci-bot@app-of-apps.com"
