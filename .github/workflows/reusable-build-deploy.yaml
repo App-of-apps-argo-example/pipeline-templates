@@ -1,0 +1,59 @@
+name: Standard Build and Update GitOps
+on:
+  workflow_call:
+    inputs:
+      app_name:
+        required: true
+        type: string
+    secrets:
+      WIF_PROVIDER:
+        required: false
+      WIF_SERVICE_ACCOUNT:
+        required: false
+      GITOPS_BOT_TOKEN:
+        required: true
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # Required for Workload Identity Federation (OIDC)
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: GCP Auth via WIF (No static credentials)
+        uses: google-github-actions/auth@v2
+        if: env.WIF_PROVIDER != ''
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+          
+      - name: AWS Auth via OIDC (No static credentials)
+        uses: aws-actions/configure-aws-credentials@v4
+        if: env.AWS_ROLE_ARN != ''
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: eu-central-1
+      
+      - name: Build and Push Docker Image
+        run: |
+          echo "Simulating Docker Build..."
+          echo "Simulating Docker Push for ${{ inputs.app_name }} with tag ${{ github.sha }}"
+      
+      - name: Update GitOps Repository
+        run: |
+          # Use PAT or GitHub App Token to clone gitops-core
+          git clone https://x-access-token:${{ secrets.GITOPS_BOT_TOKEN }}@github.com/App-of-apps-argo-example/gitops-core.git
+          cd gitops-core
+          
+          # Update the tag in the values file
+          sed -i "s/tag: .*/tag: ${{ github.sha }}/" environments/stage/${{ inputs.app_name }}-values.yaml
+          
+          git config user.name "ci-bot"
+          git config user.email "ci-bot@app-of-apps.com"
+          git add .
+          git commit -m "chore: deploy ${{ inputs.app_name }} version ${{ github.sha }}"
+          git push
